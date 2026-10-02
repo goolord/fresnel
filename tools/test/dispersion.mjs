@@ -9,10 +9,11 @@
 //
 //   node tools/test/dispersion.mjs [--rate=48000]
 
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { readWav } from "./wav.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const buildDir = join(root, "build", "test");
@@ -36,23 +37,6 @@ const settings = [
 const freqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 15000];
 const impulseAt = Math.round(0.25 * rate);
 const fftSize = 1 << Math.ceil(Math.log2(0.6 * rate));
-
-function readWav(path) {
-  const b = readFileSync(path);
-  let pos = 12, fmt, data;
-  while (pos + 8 <= b.length) {
-    const id = b.toString("ascii", pos, pos + 4), size = b.readUInt32LE(pos + 4);
-    if (id === "fmt ") {
-      const tag = b.readUInt16LE(pos + 8);
-      fmt = { format: tag === 0xfffe ? b.readUInt16LE(pos + 32) : tag, channels: b.readUInt16LE(pos + 10), bits: b.readUInt16LE(pos + 22) };
-    }
-    if (id === "data") data = b.subarray(pos + 8, pos + 8 + size);
-    pos += 8 + size + (size & 1);
-  }
-  const bytes = fmt.bits / 8, frames = Math.floor(data.length / (bytes * fmt.channels));
-  const read = (o) => (fmt.format === 3 ? (bytes === 8 ? data.readDoubleLE(o) : data.readFloatLE(o)) : data.readInt16LE(o) / 32768);
-  return Array.from({ length: fmt.channels }, (_, c) => Float64Array.from({ length: frames }, (_, i) => read((i * fmt.channels + c) * bytes)));
-}
 
 // in-place radix-2 FFT
 function fft(re, im) {

@@ -14,14 +14,7 @@ let start = async pc =>
     Preset.resolve(first, defs)->Map.forEachWithKey((value, id) => pc->sendEventOrValue(id, value))
     pc->sendStoredStateValue(
       PresetStore.storedKey,
-      JSON.Object(
-        Dict.fromArray([
-          ("info", Preset.infoJson(first)),
-          ("values", Object(first.values->Dict.mapValues(x => JSON.Number(x)))),
-          ("list", String("factory")),
-          ("index", Number(0.)),
-        ]),
-      ),
+      PresetStore.stateJson(~current=first, ~listName="factory", ~index=Some(0)),
     )
   | None => ()
   }

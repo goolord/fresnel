@@ -67,19 +67,24 @@ let refreshDirty = t => {
   }
 }
 
+// The stored state: the current preset, and the list the arrows step through, by name, with its
+// presets if given.
+let stateJson = (~current: Preset.t, ~listName, ~index, ~list=[]) =>
+  JSON.Object(
+    Dict.fromArray([
+      ("info", Preset.infoJson(current)),
+      ("values", Preset.valuesJson(current.values)),
+      ("list", String(listName)),
+      ("index", index->Option.mapOr(JSON.Null, i => Number(Int.toFloat(i)))),
+      ...list != [] ? [("presets", JSON.Array(list->Array.map(Preset.toJson)))] : [],
+    ]),
+  )
+
 // The current preset, and the list the arrows step through: the factory's by name, any other
 // (a bank the user loaded) in full, so that a session comes back with it.
 let store = t => {
-  let ownList = t.listName != "factory" && t.list != []
-  let json = JSON.Object(
-    Dict.fromArray([
-      ("info", Preset.infoJson(t.current)),
-      ("values", Object(t.current.values->Dict.mapValues(x => JSON.Number(x)))),
-      ("list", String(t.listName)),
-      ("index", t.index->Option.mapOr(JSON.Null, i => Number(Int.toFloat(i)))),
-      ...ownList ? [("presets", JSON.Array(t.list->Array.map(Preset.toJson)))] : [],
-    ]),
-  )
+  let ownList = t.listName != "factory"
+  let json = stateJson(~current=t.current, ~listName=t.listName, ~index=t.index, ~list=ownList ? t.list : [])
   let text = JSON.stringify(json)
   t.stored = Some(text)
   t.pc->PatchConnection.sendStoredStateValue(storedKey, json)
@@ -211,10 +216,7 @@ let onState = (t, {key, value}: PatchConnection.storedStateEvent) =>
     switch value {
     | Object(o) =>
       let info = o->Dict.get("info")->Option.flatMap(Preset.fromJson)
-      let values = switch o->Dict.get("values") {
-      | Some(v) => Preset.fromJson(Object(Dict.fromArray([("values", v)])))->Option.map(p => p.values)
-      | None => None
-      }
+      let values = o->Dict.get("values")->Option.map(Preset.valuesFromJson)
       info->Option.forEach(info => {
         t.current = {...info, values: values->Option.getOr(Dict.make())}
         t.listName = Preset.string(o, "list")
@@ -239,12 +241,10 @@ let onState = (t, {key, value}: PatchConnection.storedStateEvent) =>
 let readFactory = async pc =>
   switch await Resources.readText(pc, factoryPath) {
   | Some(text) =>
-    switch PresetFormat.jsonFormat(~name="", ~extension="").read(
-      ~fileName="factory",
-      PresetFormat.encodeUtf8(text),
-    ) {
+    switch PresetFormat.readJson(~fileName="factory", JSON.parseOrThrow(text)) {
     | Ok(presets) => presets
     | Error(_) => []
+    | exception _ => []
     }
   | None => []
   }

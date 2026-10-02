@@ -90,18 +90,9 @@ namespace bridge::library
         return true;
     }
 
-    inline std::string toLower (std::string s)
-    {
-        for (auto& c : s)
-            if (c >= 'A' && c <= 'Z')
-                c = static_cast<char> (c - 'A' + 'a');
-
-        return s;
-    }
-
     inline std::string lowerExtension (const std::filesystem::path& p)
     {
-        return toLower (utf8 (p.extension()));
+        return choc::text::toLowerCase (utf8 (p.extension()));
     }
 
     /// An extension names the cached files too, so it's a dot and a few letters, digits, '-' or
@@ -128,7 +119,7 @@ namespace bridge::library
             if (! list[i].isString())
                 continue;
 
-            auto ext = toLower (std::string (list[i].getString()));
+            auto ext = choc::text::toLowerCase (std::string (list[i].getString()));
 
             if (isSafeExtension (ext) && std::find (extensions.begin(), extensions.end(), ext) == extensions.end())
                 extensions.push_back (ext);
@@ -392,7 +383,7 @@ namespace bridge::library
         {
             namespace fs = std::filesystem;
             auto id = args["id"].toString();
-            auto ext = toLower (args["ext"].toString());
+            auto ext = choc::text::toLowerCase (args["ext"].toString());
             auto part = args["part"].getWithDefault<int64_t> (0);
             auto parts = args["parts"].getWithDefault<int64_t> (1);
 

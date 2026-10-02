@@ -5,7 +5,8 @@
 //                         unit or value names, which hosts see), sending params::Values (every
 //                         parameter's plain value, by name) whenever one changes; and namespace
 //                         params: that struct, its defaults, and names for each list's values
-//                         (params::<id>::<value>) for the DSP to compare against
+//                         (params::<id>::<value>) for the DSP to compare against; every value
+//                         arrives clamped to its parameter's range
 //   the manifest's source list (every .cmajor file under dsp/: Cmajor manifests take no
 //                         wildcards) and its view size, from ui/plugin/Config.res
 //
@@ -85,7 +86,7 @@ defs.forEach((d, index) => {
   } else if (kind === "Choice") {
     ann.push(`min: ${d.min}`, `max: ${d.max}`, `init: ${Math.round(d.init)}`, `text: ${str(d.names.join("|"))}`);
     endpoints.push(`    input event int ${d.id} [[ ${ann.join(", ")} ]];`);
-    handlers.push(`    event ${d.id} (int v)  { values.${d.id} = v; out <- values; }`);
+    handlers.push(`    event ${d.id} (int v)  { values.${d.id} = clamp (v, ${d.min}, ${d.max}); out <- values; }`);
     fields.push(`        int ${d.id};`);
     defaults.push(`        v.${d.id} = ${Math.round(d.init)};`);
     // the list's values by name
@@ -101,10 +102,12 @@ defs.forEach((d, index) => {
     ann.push(`min: ${num(d.min)}`, `max: ${num(d.max)}`, `init: ${num(d.init)}`);
     if (d.unit !== undefined) ann.push(`unit: ${str(d.unit)}`);
     endpoints.push(`    input event float ${d.id} [[ ${ann.join(", ")} ]];`);
-    // a logarithmic knob's endpoint holds its position; the DSP gets lo * (hi / lo) ^ position
+    // clamped to its range, so the DSP needn't; a logarithmic knob's endpoint holds its position,
+    // and the DSP gets lo * (hi / lo) ^ position
+    const v = `clamp (v, ${cf(d.min)}, ${cf(d.max)})`;
     const plain = spec.kind._0.law === "Exp"
-      ? `float (${f64(spec.kind._0.min)} * pow (${f64(spec.kind._0.max / spec.kind._0.min)}, float64 (v)))`
-      : "v";
+      ? `float (${f64(spec.kind._0.min)} * pow (${f64(spec.kind._0.max / spec.kind._0.min)}, float64 (${v})))`
+      : v;
     handlers.push(`    event ${d.id} (float v)  { values.${d.id} = ${plain}; out <- values; }`);
     fields.push(`        float ${d.id};`);
     defaults.push(`        v.${d.id} = ${cf(d.plain(d.init))};`);
@@ -165,6 +168,6 @@ const sized = listed.replace(
   /("view"\s*:\s*\{[^}]*?"width"\s*:\s*)\d+(\s*,[^}]*?"height"\s*:\s*)\d+/,
   `$1${Config.designWidth}$2${Config.designHeight}`,
 );
-if (sized !== manifest) writeFileSync(manifestPath, sized);
+writeGenerated(manifestPath, sized);
 
 console.log(`${defs.length} parameters${wrote ? " -> dsp/Params.cmajor" : " (dsp/Params.cmajor is unchanged)"}`);

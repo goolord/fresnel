@@ -34,7 +34,7 @@ type controls = {spreadMs: float, chroma: float, width: float, intensity: float}
 
 let controls = model => {
   let get = id => model->ParamModel.get(id)
-  let morph = get("blend") == 0.
+  let morph = Optics.isMorph(get("blend"))
   {
     spreadMs: get("distance") * (morph ? get("mix") : 1.),
     chroma: get("chroma"),
@@ -100,8 +100,6 @@ let byte = x => Float.toInt(Math.max(0., Math.min(255., x)))
 // delays shoot up, and a line between the two would spike.
 let measuredTopHz = Optics.topHz * 0.96
 
-let hzLabel = hz => hz >= 1000. ? Float.toString(hz / 1000.) ++ "k" : Float.toString(hz)
-
 let make = (ctx: Ctx.t, parent, box: box, ~live) => {
   open Context2d
   let root = el("div", ~parent)->placeBox(box)
@@ -133,6 +131,35 @@ let make = (ctx: Ctx.t, parent, box: box, ~live) => {
   // the frequency under the pointer, for the status line
   let hoverHz = ref(1000.)
 
+  // what the light field and the readout were last worked out from: a quiet patch still sends its
+  // curve some 23 times a second, and an unchanged field needn't be computed again
+  let lastField = ref([])
+  let lastReadout = ref([])
+  // the light field for each row's delay
+  let paintField = (~taus: array<float>, ~t0: float, ~t1: float, ~width: float, ~spreadMs: float, ~gain: float) => {
+    let slitMs = 0.022 * (t1 - t0)
+    let px = image->pixels
+    taus->Array.forEachWithIndex((tau, r) => {
+      let hz = rowHz(r)
+      let (cr, cg, cb) = Optics.hzRgb(hz)
+      let nf = Math.max(0.08, Math.min(120., (0.5 + 24. * width * width) * hz / 1000. / (1. + spreadMs / 40.)))
+      // each row exposed for its own brightest (a far-field pattern spreads its light thin), and
+      // dimmed above the top, where the sections are parked
+      let exposure = 1. / Math.max(0.35, Optics.slitIntensity(0., ~nf))
+      let dim = (hz >= Optics.topHz ? 0.25 : 1.) * exposure
+      for col in 0 to columns - 1 {
+        let t = t0 + (t1 - t0) * (Int.toFloat(col) + 0.5) / Int.toFloat(columns)
+        let i = Math.min(1.5, Optics.slitIntensity((t - tau) / slitMs, ~nf) * gain * dim)
+        let o = 4 * (r * columns + col)
+        px->setPixelByte(o, byte(7. + 250. * cr * i))
+        px->setPixelByte(o + 1, byte(8. + 250. * cg * i))
+        px->setPixelByte(o + 2, byte(13. + 250. * cb * i))
+        px->setPixelByte(o + 3, 255)
+      }
+    })
+    fg->putImageData(image, 0., 0.)
+  }
+
   let curveNow = () =>
     switch (fresh(live), live.curve) {
     | (true, Some(c)) => Some(c)
@@ -151,43 +178,27 @@ let make = (ctx: Ctx.t, parent, box: box, ~live) => {
       }
 
     // the span: the next that holds the longest delay with some room
+    let taus = Array.fromInitializer(~length=rows, r => delayAt(rowHz(r)))
     let longest = ref(0.)
-    for r in 0 to rows - 1 {
+    taus->Array.forEachWithIndex((tau, r) => {
       let hz = rowHz(r)
       if hz < Optics.topHz {
-        longest := Math.max(longest.contents, Math.max(delayAt(hz), targetAt(hz)))
+        longest := Math.max(longest.contents, Math.max(tau, targetAt(hz)))
       }
-    }
+    })
     let (span, step) =
       spans->Array.find(((s, _)) => s >= longest.contents * 1.15)->Option.getOr((500., 100.))
     let t0 = -0.08 * span
     let t1 = span
-    let slitMs = 0.022 * (t1 - t0)
 
     // the light: Fresnel numbers fall with the slit and the wavelength (a lower frequency's
     // longer), and with the distance
     let gain = 0.55 + 0.7 * envelopeOf(live)
-    let px = image->pixels
-    for r in 0 to rows - 1 {
-      let hz = rowHz(r)
-      let tau = delayAt(hz)
-      let (cr, cg, cb) = Optics.hzRgb(hz)
-      let nf = Math.max(0.08, Math.min(120., (0.5 + 24. * width * width) * hz / 1000. / (1. + c.spreadMs / 40.)))
-      // each row exposed for its own brightest (a far-field pattern spreads its light thin), and
-      // dimmed above the top, where the sections are parked
-      let exposure = 1. / Math.max(0.35, Optics.slitIntensity(0., ~nf))
-      let dim = (hz >= Optics.topHz ? 0.25 : 1.) * exposure
-      for col in 0 to columns - 1 {
-        let t = t0 + (t1 - t0) * (Int.toFloat(col) + 0.5) / Int.toFloat(columns)
-        let i = Math.min(1.5, Optics.slitIntensity((t - tau) / slitMs, ~nf) * gain * dim)
-        let o = 4 * (r * columns + col)
-        px->setPixelByte(o, byte(7. + 250. * cr * i))
-        px->setPixelByte(o + 1, byte(8. + 250. * cg * i))
-        px->setPixelByte(o + 2, byte(13. + 250. * cb * i))
-        px->setPixelByte(o + 3, 255)
-      }
+    let fieldKey = [t0, t1, width, c.spreadMs, gain, ...taus]
+    if fieldKey != lastField.contents {
+      lastField := fieldKey
+      paintField(~taus, ~t0, ~t1, ~width, ~spreadMs=c.spreadMs, ~gain)
     }
-    fg->putImageData(image, 0., 0.)
 
     let (w, h) = (canvas->canvasWidth, canvas->canvasHeight)
     g->setFillStyle(ground)
@@ -226,7 +237,7 @@ let make = (ctx: Ctx.t, parent, box: box, ~live) => {
       CanvasStyle.hline(g, w, y(hz), ink(major ? 0.16 : 0.07))
       if major {
         g->setFillStyle(ink(0.5))
-        g->fillText(hzLabel(hz), 8., y(hz) - 11.)
+        g->fillText(Graph.hzTick(hz), 8., y(hz) - 11.)
       }
     })
 
@@ -246,7 +257,7 @@ let make = (ctx: Ctx.t, parent, box: box, ~live) => {
 
     // the slit: the band the dispersion takes in, at the arrival line
     let ce = Optics.chromaPosition(c.chroma)
-    let half = Math.max(0.001, width * Math.max(ce, 1. - ce))
+    let half = Optics.halfWidth(ce, ~width)
     let lowHz = Math.max(Optics.curveLowHz, Optics.unwarp(Math.max(0., ce - half)))
     let highHz = Math.min(Optics.topHz, Optics.unwarp(Math.min(1., ce + half)))
     if c.spreadMs > 0. {
@@ -286,10 +297,12 @@ let make = (ctx: Ctx.t, parent, box: box, ~live) => {
     | (Some(_), Some(t)) => `${Float.toFixed(t.budget * 100., ~digits=0)} % of the glass`
     | _ => ""
     }
-    readout->setTextContent("")
-    [`spread ${spread}`, `peak ${Param.hzText(Optics.peakHz(c.chroma))}`, budget]
-    ->Array.filter(s => s != "")
-    ->Array.forEach(s => el("div", ~text=s, ~parent=readout)->ignore)
+    let lines = [`spread ${spread}`, `peak ${Param.hzText(Optics.peakHz(c.chroma))}`, budget]->Array.filter(s => s != "")
+    if lines != lastReadout.contents {
+      lastReadout := lines
+      readout->setTextContent("")
+      lines->Array.forEach(s => el("div", ~text=s, ~parent=readout)->ignore)
+    }
   }
 
   let redraw = perFrame(() =>

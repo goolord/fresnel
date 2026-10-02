@@ -147,9 +147,15 @@ namespace fresnel
 
         // smoothed controls (spread in samples, chroma position, slit half-width) and the envelope
         float64 spread, centre, width, envelope;
-        float64 spreadUsed, budgetUsed, apertureNow;
+        float64 spreadUsed, budgetUsed;
         float mixNow, gainNow;
         bool fresh = true;
+
+        // what the last design was for: once the smoothed controls settle (they stop at a fixed
+        // point), there's nothing to redesign, nor any of the curve to work out again
+        float64 designedSpread, designedCentre, designedWidth;
+        bool gliding;
+        int curveStale;
 
         // telemetry
         float[curvePoints] curve;
@@ -309,8 +315,13 @@ namespace fresnel
         {
             for (wrap<curvePerDesign> n)
             {
-                let i = wrap<curvePoints> (curveNext);
-                curve[i] = float (groupDelayAt (i) * 1000.0 / sampleRate);
+                if (curveStale > 0)
+                {
+                    let i = wrap<curvePoints> (curveNext);
+                    curve[i] = float (groupDelayAt (i) * 1000.0 / sampleRate);
+                    --curveStale;
+                }
+
                 curveNext = (curveNext + 1) % curvePoints;
             }
 
@@ -320,7 +331,7 @@ namespace fresnel
 
                 Telemetry t;
                 t.envelope = float (envelopeAmount (envelope));
-                t.aperture = float (apertureNow);
+                t.aperture = float (width);
                 t.spread = float (spreadUsed * 1000.0 / sampleRate);
                 t.peakHz = float (unwarp (centre, top));
                 t.budget = float (budgetUsed);
@@ -333,12 +344,11 @@ namespace fresnel
         void update()
         {
             let morph = p.blend == params::blend::morph;
-            let wantSpread = float64 (max (p.distance, 0.0f)) * 0.001 * sampleRate * (morph ? float64 (clamp (p.mix, 0.0f, 1.0f)) : 1.0);
+            let wantSpread = float64 (p.distance) * 0.001 * sampleRate * (morph ? float64 (p.mix) : 1.0);
             let wantCentre = chromaPosition (float64 (p.chroma), top);
 
             // the slit: the input level narrows it (intensity > 0) or widens it (< 0), up to 8x
-            let slit = float64 (clamp (p.aperture, 0.05f, 1.0f));
-            let wantWidth = clamp (slit * pow (8.0, -float64 (clamp (p.intensity, -1.0f, 1.0f)) * envelopeAmount (envelope)), 0.03, 1.0);
+            let wantWidth = clamp (float64 (p.aperture) * pow (8.0, -float64 (p.intensity) * envelopeAmount (envelope)), 0.03, 1.0);
 
             if (fresh)
             {
@@ -351,10 +361,27 @@ namespace fresnel
             spread += (wantSpread - spread) * k;
             centre += (wantCentre - centre) * k;
             width += (wantWidth - width) * k;
-            apertureNow = width;
 
-            // resting: the coefficients may as well jump, nothing is passing through them
-            design (fresh || idle);
+            if (fresh || spread != designedSpread || centre != designedCentre || width != designedWidth)
+            {
+                // resting: the coefficients may as well jump, nothing is passing through them (so
+                // they needn't glide while idle either: this jumps them to wherever they'd have got to)
+                design (fresh || idle);
+                designedSpread = spread;
+                designedCentre = centre;
+                designedWidth = width;
+                gliding = true;
+                curveStale = curvePoints;
+            }
+            else if (gliding)
+            {
+                // the last glide has landed on its design
+                for (wrap<sections> k)
+                    glide[k] = float64<4> (0.0, 0.0, 0.0, 0.0);
+
+                gliding = false;
+            }
+
             fresh = false;
             sendCurve();
         }
@@ -392,7 +419,7 @@ namespace fresnel
             let gainGlide = lib::smoothing (sampleRate, 20.0, 1);
             let restAfter = int (1.5 * sampleRate);
 
-            mixNow = clamp (p.mix, 0.0f, 1.0f);
+            mixNow = p.mix;
             gainNow = lib::dbToGain (p.level);
 
             loop
@@ -400,8 +427,8 @@ namespace fresnel
                 update();
 
                 let crossfade = p.blend == params::blend::crossfade;
-                let wantMix = crossfade ? clamp (p.mix, 0.0f, 1.0f) : 1.0f;
-                let wantGain = lib::dbToGain (clamp (p.level, -24.0f, 12.0f));
+                let wantMix = crossfade ? p.mix : 1.0f;
+                let wantGain = lib::dbToGain (p.level);
 
                 for (wrap<designInterval> n)
                 {
@@ -411,6 +438,9 @@ namespace fresnel
                     // the envelope follower, linked across the channels
                     let e = float64 (level);
                     envelope += (e - envelope) * float64 (e > envelope ? envAttack : envRelease);
+
+                    if (envelope < 1.0e-9)
+                        envelope = 0.0;   // (well below what envelopeAmount reads, and no denormals)
 
                     if (level > 1.0e-9f)
                     {
@@ -442,11 +472,6 @@ namespace fresnel
                         }
 
                         wet = float<2> (float (x[0]), float (x[1]));
-                    }
-                    else
-                    {
-                        for (wrap<sections> k)
-                            coef[k] += glide[k];
                     }
 
                     mixNow += (wantMix - mixNow) * gainGlide;

@@ -66,12 +66,6 @@ let fromBase64: string => Uint8Array.t = %raw(`s => Uint8Array.from (atob (s), c
 
 //==============================================================================
 
-let str = (d, key) =>
-  switch d->Dict.get(key) {
-  | Some(JSON.String(s)) => s
-  | _ => ""
-  }
-
 let num = (d, key) =>
   switch d->Dict.get(key) {
   | Some(JSON.Number(x)) => x
@@ -80,14 +74,14 @@ let num = (d, key) =>
 
 let bankOf = (json: JSON.t) =>
   switch json {
-  | Object(d) if str(d, "id") != "" =>
+  | Object(d) if Preset.string(d, "id") != "" =>
     Some({
-      id: str(d, "id"),
-      name: str(d, "name"),
-      origin: str(d, "origin") == "opened" ? Opened : Folder,
-      file: str(d, "file"),
-      path: str(d, "path"),
-      folder: str(d, "folder"),
+      id: Preset.string(d, "id"),
+      name: Preset.string(d, "name"),
+      origin: Preset.string(d, "origin") == "opened" ? Opened : Folder,
+      file: Preset.string(d, "file"),
+      path: Preset.string(d, "path"),
+      folder: Preset.string(d, "folder"),
       modified: num(d, "modified"),
     })
   | _ => None
@@ -98,7 +92,7 @@ let changed = t => t.listeners->Array.forEach(fn => fn())
 let request = (t, what, args) => t.channel->HostChannel.request(what ++ "=" ++ JSON.stringify(Object(Dict.fromArray(args))))
 
 let onRead = (t, d: dict<JSON.t>) => {
-  let id = str(d, "id")
+  let id = Preset.string(d, "id")
   t.reads
   ->Map.get(id)
   ->Option.forEach(((parts, finish)) =>
@@ -125,19 +119,11 @@ let onRead = (t, d: dict<JSON.t>) => {
   )
 }
 
-let strings = items =>
-  items->Array.filterMap(x =>
-    switch x {
-    | JSON.String(s) => Some(s)
-    | _ => None
-    }
-  )
-
 let settingKey = "presetFolders"
 
 let folders = t =>
   switch t.settings->Settings.savedValue(settingKey) {
-  | Some(Array(items)) => strings(items)
+  | Some(Array(items)) => Preset.strings(items)
   | _ => []
   }
 
@@ -148,13 +134,11 @@ let extensions = () => {
   all->Array.filterWithIndex((e, i) => e != ".json" && all->Array.indexOf(e) == i)
 }
 
-let jsonStrings = list => JSON.Array(list->Array.map(s => JSON.String(s)))
-
 let scan = t => {
   t.scanned = true
   t.scanning = true
   changed(t)
-  request(t, "scan", [("folders", jsonStrings(folders(t))), ("extensions", jsonStrings(extensions()))])
+  request(t, "scan", [("folders", Preset.stringsJson(folders(t))), ("extensions", Preset.stringsJson(extensions()))])
 }
 
 let onReply = (t, reply: dict<JSON.t>) =>
@@ -172,7 +156,7 @@ let onReply = (t, reply: dict<JSON.t>) =>
       t.verifying = false
       let before = key =>
         switch reply->Dict.get(key) {
-        | Some(Array(items)) => Some(strings(items))
+        | Some(Array(items)) => Some(Preset.strings(items))
         | _ => None
         }
       if folders(t) != [] && (before("scanned") != Some(folders(t)) || before("extensions") != Some(extensions())) {
@@ -216,7 +200,7 @@ let refresh = t => {
 }
 
 let setFolders = (t, list) => {
-  t.settings->Settings.save(settingKey, jsonStrings(list))
+  t.settings->Settings.save(settingKey, Preset.stringsJson(list))
   scan(t)
 }
 

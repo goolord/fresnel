@@ -28,8 +28,9 @@ await build({
 console.log("ui/Index.res.mjs -> bundle/view.js, worker/PatchWorker.res.mjs -> bundle/worker.js");
 
 // the factory presets, read with the plugin's formats
-await import(pathToFileURL(join(root, "ui", "plugin", "Formats.res.mjs")).href);
+const Formats = await import(pathToFileURL(join(root, "ui", "plugin", "Formats.res.mjs")).href);
 const PresetFormat = await import(pathToFileURL(join(root, "ui", "presets", "PresetFormat.res.mjs")).href);
+PresetFormat.register(Formats.all);
 const Preset = await import(pathToFileURL(join(root, "ui", "presets", "Preset.res.mjs")).href);
 
 const dir = join(root, "presets");

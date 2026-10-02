@@ -1,7 +1,7 @@
 // Preset file formats. A format reads a file into presets (one, or a bank of several) and may write
 // them back; everything else (the store, the browser, the plugin's bank library, drag and drop)
 // works with any format the plugin registers, by file extension. The template's own is JSON
-// (`json` below); a plugin adds others in App.res, e.g. another synth's banks.
+// (`json` below); a plugin adds others in Formats.res, e.g. another synth's banks.
 
 type t = {
   // what the Load button's menu and messages call it, e.g. "Nano preset"
@@ -28,23 +28,28 @@ let extensionOf = fileName =>
 
 // The template's format: a preset is a JSON object (Preset.toJson), and a bank is
 // { "name": ..., "presets": [ ... ] }. Both use the same extension.
+let readJson = (~fileName, json: JSON.t) =>
+  switch json {
+  | Object(o) =>
+    switch o->Dict.get("presets") {
+    | Some(Array(items)) =>
+      let presets = items->Array.filterMap(Preset.fromJson)
+      presets == [] ? Error("the bank holds no presets") : Ok(presets)
+    | _ =>
+      switch Preset.fromJson(Object(o)) {
+      | Some(p) => Ok([o->Dict.get("name") == None ? {...p, name: Web.baseName(fileName)} : p])
+      | None => Error("it isn't a preset")
+      }
+    }
+  | _ => Error("it isn't a preset")
+  }
+
 let jsonFormat = (~name, ~extension) => {
   name,
   extensions: [extension],
   read: (~fileName, bytes) =>
     switch JSON.parseOrThrow(decodeUtf8(bytes)) {
-    | Object(o) =>
-      switch o->Dict.get("presets") {
-      | Some(Array(items)) =>
-        let presets = items->Array.filterMap(Preset.fromJson)
-        presets == [] ? Error("the bank holds no presets") : Ok(presets)
-      | _ =>
-        switch Preset.fromJson(Object(o)) {
-        | Some(p) => Ok([o->Dict.get("name") == None ? {...p, name: Web.baseName(fileName)} : p])
-        | None => Error("it isn't a preset")
-        }
-      }
-    | _ => Error("it isn't a preset")
+    | json => readJson(~fileName, json)
     | exception _ => Error("it isn't JSON")
     },
   write: Some(
@@ -67,7 +72,7 @@ let jsonFormat = (~name, ~extension) => {
   ),
 }
 
-// The formats the plugin reads, its own first (App.res sets them).
+// The formats the plugin reads, its own first (App.mount registers Formats.all).
 let formats: ref<array<t>> = ref([])
 
 let register = all => formats := all

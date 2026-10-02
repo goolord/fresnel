@@ -3,5 +3,3 @@
 // factory presets (presets/) all take any format listed.
 
 let all = [PresetFormat.jsonFormat(~name="Fresnel preset", ~extension=".preset")]
-
-PresetFormat.register(all)

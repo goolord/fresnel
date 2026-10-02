@@ -11,6 +11,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { readWav, levels } from "./wav.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const testDir = join(root, "tools", "test", "dsp");
@@ -23,31 +24,6 @@ mkdirSync(buildDir, { recursive: true });
 const libDir = join(root, "dsp", "lib");
 const lib = readdirSync(libDir).filter((f) => f.endsWith(".cmajor")).map((f) => join(libDir, f));
 const rel = (p) => relative(buildDir, p).replace(/\\/g, "/");
-
-// The samples of a WAV file as floats, one array per channel.
-function readWav(path) {
-  const b = readFileSync(path);
-  let pos = 12, fmt, data;
-  while (pos + 8 <= b.length) {
-    const id = b.toString("ascii", pos, pos + 4), size = b.readUInt32LE(pos + 4);
-    if (id === "fmt ") {
-      // WAVE_FORMAT_EXTENSIBLE keeps the real format at the start of its subformat GUID
-      const tag = b.readUInt16LE(pos + 8);
-      fmt = { format: tag === 0xfffe ? b.readUInt16LE(pos + 32) : tag, channels: b.readUInt16LE(pos + 10), bits: b.readUInt16LE(pos + 22) };
-    }
-    if (id === "data") data = b.subarray(pos + 8, pos + 8 + size);
-    pos += 8 + size + (size & 1);
-  }
-  if (!fmt || !data) throw new Error(`${path} isn't a WAV file`);
-  const bytes = fmt.bits / 8, frames = Math.floor(data.length / (bytes * fmt.channels));
-  const read = (o) =>
-    fmt.format === 3 ? (bytes === 8 ? data.readDoubleLE(o) : data.readFloatLE(o))
-    : bytes === 2 ? data.readInt16LE(o) / 32768
-    : bytes === 3 ? data.readIntLE(o, 3) / 8388608
-    : data.readInt32LE(o) / 2147483648;
-  return Array.from({ length: fmt.channels }, (_, c) =>
-    Float64Array.from({ length: frames }, (_, i) => read((i * fmt.channels + c) * bytes)));
-}
 
 let failed = 0, ran = 0;
 
@@ -78,16 +54,7 @@ for (const name of readdirSync(testDir).filter((f) => f.endsWith(".cmajor") && f
     continue;
   }
 
-  const channels = readWav(wav);
-  let peak = 0, sum = 0, n = 0, bad = 0;
-  for (const ch of channels)
-    for (const x of ch) {
-      if (!Number.isFinite(x)) { bad++; continue; }
-      peak = Math.max(peak, Math.abs(x));
-      sum += x * x;
-      n++;
-    }
-  const rms = Math.sqrt(sum / Math.max(1, n));
+  const { peak, rms, bad } = levels(readWav(wav));
   const problems = [
     bad > 0 && `${bad} samples aren't finite`,
     peak > limit && `peak ${peak.toFixed(3)} is above ${limit}`,

@@ -55,15 +55,43 @@ let safeFileName = name => {
 //==============================================================================
 // JSON, the template's own format (PresetFormat.json) and the stored state's
 
+let valuesJson = (values: dict<float>) => JSON.Object(values->Dict.mapValues(x => JSON.Number(x)))
+
+// the finite numbers (and switches) of a JSON object of values
+let valuesFromJson = (json: JSON.t) =>
+  switch json {
+  | Object(v) =>
+    v
+    ->Dict.toArray
+    ->Array.filterMap(((id, x)) =>
+      switch x {
+      | Number(x) if Float.isFinite(x) => Some((id, x))
+      | Boolean(on) => Some((id, on ? 1. : 0.))
+      | _ => None
+      }
+    )
+    ->Dict.fromArray
+  | _ => Dict.make()
+  }
+
+let strings = (items: array<JSON.t>) =>
+  items->Array.filterMap(x =>
+    switch x {
+    | String(s) => Some(s)
+    | _ => None
+    }
+  )
+let stringsJson = list => JSON.Array(list->Array.map(s => JSON.String(s)))
+
 let toJson = p =>
   JSON.Object(
     Dict.fromArray([
       ("name", JSON.String(p.name)),
       ("author", String(p.author)),
       ("category", String(p.category)),
-      ("tags", Array(p.tags->Array.map(t => JSON.String(t)))),
+      ("tags", stringsJson(p.tags)),
       ("description", String(p.description)),
-      ("values", Object(p.values->Dict.mapValues(x => JSON.Number(x)))),
+      ("values", valuesJson(p.values)),
       ...Dict.keysToArray(p.extra)->Array.length > 0 ? [("extra", JSON.Object(p.extra))] : [],
     ]),
   )
@@ -77,20 +105,6 @@ let string = (o, key) =>
 let fromJson = (json: JSON.t) =>
   switch json {
   | Object(o) =>
-    let values = switch o->Dict.get("values") {
-    | Some(Object(v)) =>
-      v
-      ->Dict.toArray
-      ->Array.filterMap(((id, x)) =>
-        switch x {
-        | Number(x) if Float.isFinite(x) => Some((id, x))
-        | Boolean(on) => Some((id, on ? 1. : 0.))
-        | _ => None
-        }
-      )
-      ->Dict.fromArray
-    | _ => Dict.make()
-    }
     Some({
       name: switch string(o, "name") {
       | "" => "Untitled"
@@ -99,17 +113,11 @@ let fromJson = (json: JSON.t) =>
       author: string(o, "author"),
       category: string(o, "category"),
       tags: switch o->Dict.get("tags") {
-      | Some(Array(tags)) =>
-        tags->Array.filterMap(t =>
-          switch t {
-          | String(s) => Some(s)
-          | _ => None
-          }
-        )
+      | Some(Array(tags)) => strings(tags)
       | _ => []
       },
       description: string(o, "description"),
-      values,
+      values: o->Dict.get("values")->Option.mapOr(Dict.make(), valuesFromJson),
       extra: switch o->Dict.get("extra") {
       | Some(Object(extra)) => extra
       | _ => Dict.make()

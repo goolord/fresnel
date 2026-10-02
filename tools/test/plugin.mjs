@@ -5,10 +5,11 @@
 //
 //   node tools/test/plugin.mjs
 
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { readWav, levels } from "./wav.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const buildDir = join(root, "build", "test");
@@ -48,28 +49,7 @@ if (r.status !== 0 || /error/i.test(output) || !existsSync(outPath)) {
   process.exit(1);
 }
 
-// the samples that came out (float or PCM, WAVE_FORMAT_EXTENSIBLE or not)
-const b = readFileSync(outPath);
-let pos = 12, fmt, data;
-while (pos + 8 <= b.length) {
-  const id = b.toString("ascii", pos, pos + 4), size = b.readUInt32LE(pos + 4);
-  if (id === "fmt ") {
-    const tag = b.readUInt16LE(pos + 8);
-    fmt = { format: tag === 0xfffe ? b.readUInt16LE(pos + 32) : tag, bits: b.readUInt16LE(pos + 22) };
-  }
-  if (id === "data") data = b.subarray(pos + 8, pos + 8 + size);
-  pos += 8 + size + (size & 1);
-}
-const bytes = fmt.bits / 8;
-let peak = 0, sum = 0, n = 0, bad = 0;
-for (let o = 0; o + bytes <= data.length; o += bytes) {
-  const x = fmt.format === 3 ? (bytes === 8 ? data.readDoubleLE(o) : data.readFloatLE(o)) : data.readInt16LE(o) / 32768;
-  if (!Number.isFinite(x)) { bad++; continue; }
-  peak = Math.max(peak, Math.abs(x));
-  sum += x * x;
-  n++;
-}
-const rms = Math.sqrt(sum / Math.max(1, n));
+const { peak, rms, bad } = levels(readWav(outPath));
 const problems = [bad > 0 && `${bad} samples aren't finite`, peak > 2 && `peak ${peak.toFixed(3)}`, rms < 1e-3 && `nearly silent (rms ${rms.toExponential(2)})`].filter(Boolean);
 console.log(problems.length ? `FAIL plugin: ${problems.join(", ")}` : `ok   plugin: peak ${peak.toFixed(3)}, rms ${rms.toFixed(4)}`);
 process.exit(problems.length ? 1 : 0);

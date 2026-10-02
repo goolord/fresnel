@@ -13,6 +13,7 @@ let curveLowHz = 20.
 let curveHighHz = 20000.
 
 let blendNames = ["morph", "crossfade"]
+let isMorph = (blend: float) => blendNames[Float.toInt(blend)] == Some("morph")
 
 let warp = (~top=topHz, hz) => Math.log(1. + Math.max(hz, 0.) / warpKneeHz) / Math.log(1. + top / warpKneeHz)
 let unwarp = (~top=topHz, u) => warpKneeHz * (Math.pow(1. + top / warpKneeHz, ~exp=u) - 1.)
@@ -30,12 +31,14 @@ let shape = (u: float, ~c: float, ~h: float) => {
   Math.max(0., 1. - x * x)
 }
 
+// The target's half-width for a slit of this width around the warped position c.
+let halfWidth = (c, ~width) => Math.max(0.001, width * Math.max(c, 1. - c))
+
 // The group delay (ms) the controls ask for at hz: what the DSP aims at before its sections smooth
 // it and its budget limits it. width is the slit (the aperture after the envelope).
 let targetMs = (hz, ~spreadMs: float, ~chroma, ~width: float) => {
   let c = chromaPosition(chroma)
-  let h = Math.max(0.001, width * Math.max(c, 1. - c))
-  hz >= topHz ? 0. : spreadMs * shape(warp(hz), ~c, ~h)
+  hz >= topHz ? 0. : spreadMs * shape(warp(hz), ~c, ~h=halfWidth(c, ~width))
 }
 
 // The frequency of the curve's point i, and the point (fractional) at hz.

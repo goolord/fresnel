@@ -57,11 +57,11 @@ processor Params
 
     void init()     { values = params::defaults(); }
 
-    event distance (float v)  { values.distance = v; out <- values; }
-    event chroma (float v)  { values.chroma = v; out <- values; }
-    event aperture (float v)  { values.aperture = v; out <- values; }
-    event intensity (float v)  { values.intensity = v; out <- values; }
-    event mix (float v)  { values.mix = v; out <- values; }
-    event blend (int v)  { values.blend = v; out <- values; }
-    event level (float v)  { values.level = v; out <- values; }
+    event distance (float v)  { values.distance = clamp (v, 0.0f, 250.0f); out <- values; }
+    event chroma (float v)  { values.chroma = clamp (v, -1.0f, 1.0f); out <- values; }
+    event aperture (float v)  { values.aperture = clamp (v, 0.05000000074505806f, 1.0f); out <- values; }
+    event intensity (float v)  { values.intensity = clamp (v, -1.0f, 1.0f); out <- values; }
+    event mix (float v)  { values.mix = clamp (v, 0.0f, 1.0f); out <- values; }
+    event blend (int v)  { values.blend = clamp (v, 0, 1); out <- values; }
+    event level (float v)  { values.level = clamp (v, -24.0f, 12.0f); out <- values; }
 }

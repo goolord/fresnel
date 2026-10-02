@@ -298,21 +298,8 @@ let ticks = (~from=0., ~until, ~step, f) => {
   }
 }
 
-// Times in ms, as text.
-let msText = (ms: float) =>
-  Math.abs(ms) >= 1000.
-    ? Float.toString(Math.round(ms / 10.) / 100.) ++ " s"
-    : Math.abs(ms) >= 100.
-    ? Float.toString(Math.round(ms)) ++ " ms"
-    : Float.toString(Math.round(ms * 10.) / 10.) ++ " ms"
-
-let hzText = (hz: float) =>
-  hz >= 1000. ? Float.toFixed(hz / 1000., ~digits=hz >= 10000. ? 1 : 2) ++ " kHz" : Float.toFixed(hz, ~digits=0) ++ " Hz"
-
 // A frequency axis tick: "500", "2k".
 let hzTick = (hz: float) => hz >= 1000. ? `${Float.toString(hz / 1000.)}k` : Float.toString(hz)
-
-let dbText = (db: float) => (db > 0. ? "+" : "") ++ Float.toFixed(db, ~digits=1) ++ " dB"
 
 let gainDb = (x: float) => x <= 0. ? -120. : 20. * Math.log10(x)
 

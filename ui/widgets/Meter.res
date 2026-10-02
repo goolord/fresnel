@@ -124,31 +124,48 @@ let make = (ctx: Ctx.t, parent, box: box, ~endpoint=?, ~channels=2, ~floor=-60.,
       }
     }
     show()
-    // and once more when the messages go stale
-    moving.contents || !quiet
+    moving.contents
   }
 
-  let rec frame = now =>
-    if step(now) && root->offsetParent->Option.isSome {
+  // (hidden while moving: the next message picks up from there)
+  let interrupted = ref(false)
+  let rec frame = now => {
+    let moving = step(now)
+    if moving && root->offsetParent->Option.isSome {
       requestAnimationFrame(frame)
     } else {
+      interrupted := moving
       running := false
       lastFrame := None
     }
+  }
   let wake = () =>
     if !running.contents {
       running := true
       requestAnimationFrame(frame)
     }
 
+  // The patch sends levels some 30 times a second, silent or not: only a change (or the first
+  // message after a quiet spell) needs a frame, and the bars drop once the messages stop.
+  let staleTimer = ref(None)
   let feed = levels => {
+    let now = performanceNow()
+    let changed = ref(interrupted.contents || now - received.contents > stale)
     for c in 0 to channels - 1 {
       // a mono message feeds every bar
       let x = levels[c]->Option.orElse(levels[0])->Option.getOr(0.)
-      target->Array.setUnsafe(c, dbOf(Math.abs(x)))
+      let db = dbOf(Math.abs(x))
+      if db != target->Array.getUnsafe(c) {
+        changed := true
+      }
+      target->Array.setUnsafe(c, db)
     }
-    received := performanceNow()
-    wake()
+    received := now
+    staleTimer.contents->Option.forEach(clearTimeout)
+    staleTimer := Some(setTimeout(wake, Float.toInt(stale) + 20))
+    if changed.contents {
+      wake()
+    }
   }
 
   let reset = () => {
