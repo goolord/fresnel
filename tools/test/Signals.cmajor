@@ -1,0 +1,39 @@
+//  Test signals for the DSP tests (tools/test/dsp.mjs): every test patch gets this file and
+//  the library's sources.
+
+namespace test
+{
+    /// Stereo bursts: a saw chord with some noise, 0.4 s on and 0.6 s off, so that a test hears
+    /// an effect's response and its tail dying away.
+    processor Source
+    {
+        output stream float<2> out;
+
+        void main()
+        {
+            var phase = float<3> (0.0f, 0.0f, 0.0f);
+            let inc = float<3> (110.0f, 165.0f, 220.5f) / float (processor.frequency);
+            int64 noise = 12345;
+            int n = 0;
+            let period = int (processor.frequency);
+            let on = int (0.4 * processor.frequency);
+
+            loop
+            {
+                let gate = (n % period) < on ? 1.0f : 0.0f;
+                phase += inc;
+                phase -= floor (phase);
+                noise = (noise * 1103515245 + 12345) & 0x7fffffff;
+                let white = float (noise) * (1.0f / 1073741824.0f) - 1.0f;
+                let saw = (phase[0] + phase[1] + phase[2]) / 3.0f - 0.5f;
+                out <- gate * float<2> (0.5f * saw + 0.05f * white, 0.5f * saw - 0.05f * white);
+                ++n;
+                advance();
+            }
+        }
+    }
+
+    /// Runs a block processor's blocks: frames in, and the same frames out blockSize later.
+    /// Tests define their own processors on top of this pattern.
+    let blockSize = 32;
+}

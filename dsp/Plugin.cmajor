@@ -1,0 +1,30 @@
+//  The plugin's top level: the parameter endpoints (dsp/Params.cmajor, generated from
+//  ui/plugin/Params.res) and the audio go into the Fresnel disperser (dsp/FresnelDisperser.cmajor);
+//  what the view shows goes out as events.
+
+graph Plugin  [[ main ]]
+{
+    input params.*;
+    input stream float<2> in                    [[ name: "Audio In" ]];
+
+    output stream float<2> out                  [[ name: "Audio Out" ]];
+    // for the view: peak levels about 30 times a second
+    output event float<2> meterOut;
+    // for the view: the group delay the sections realise (ms, 20 Hz .. 20 kHz on a log scale), and
+    // the envelope, slit and budget behind it, about 23 times a second
+    output event float[fresnel::curvePoints] phaseResponseCurve;
+    output event fresnel::Telemetry telemetry;
+
+    node params    = Params;
+    node dsp       = fresnel::FresnelDisperser;
+
+    connection
+    {
+        params.out              -> dsp.paramsIn;
+        in                      -> dsp.in;
+        dsp.out                 -> out;
+        dsp.meterOut            -> meterOut;
+        dsp.phaseResponseCurve  -> phaseResponseCurve;
+        dsp.telemetry           -> telemetry;
+    }
+}

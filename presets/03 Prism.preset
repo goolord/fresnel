@@ -1,0 +1,8 @@
+{
+  "name": "Prism",
+  "author": "",
+  "category": "filter",
+  "tags": ["chirp", "violet"],
+  "description": "Normal dispersion, as in glass: the highs lag, so every hit rises in a quick upward chirp.",
+  "values": { "distance": 15, "chroma": 1, "aperture": 1, "intensity": 0.2, "mix": 1, "blend": 0 }
+}

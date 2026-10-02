@@ -1,0 +1,8 @@
+{
+  "name": "Glass",
+  "author": "",
+  "category": "filter",
+  "tags": ["subtle", "phase"],
+  "description": "A few milliseconds across the whole spectrum: transients turn glassy without smearing.",
+  "values": { "distance": 3, "chroma": 0.2, "aperture": 1, "intensity": 0, "mix": 1, "blend": 0 }
+}

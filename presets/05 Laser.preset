@@ -1,0 +1,8 @@
+{
+  "name": "Laser",
+  "author": "",
+  "category": "other",
+  "tags": ["chirp", "narrow", "zap"],
+  "description": "A narrow slit around 500 Hz, slowed by up to 180 ms: a ringing zap on every transient.",
+  "values": { "distance": 180, "chroma": -0.4, "aperture": 0.12, "intensity": 0, "mix": 1, "blend": 0 }
+}

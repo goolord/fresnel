@@ -1,0 +1,8 @@
+{
+  "name": "Breathing Slit",
+  "author": "",
+  "category": "dynamics",
+  "tags": ["envelope", "dynamic"],
+  "description": "Loud hits close the slit, focusing the dispersion; it opens again as they decay.",
+  "values": { "distance": 40, "chroma": 0.1, "aperture": 0.9, "intensity": 1, "mix": 1, "blend": 0 }
+}

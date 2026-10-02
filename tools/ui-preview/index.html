@@ -1,0 +1,192 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #333; }
+  #host { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div id="host"></div>
+<script type="module">
+// Runs the view in a plain browser with a stand-in for Cmajor's PatchConnection, and for the CLAP
+// plugin's bridge (tools/clap-patch.mjs): its settings (the window's zoom, kept in localStorage),
+// the host's parameter menu and the bank library. Serve the project folder (npm run preview) and
+// open /tools/ui-preview/. Options in the query string:
+//   ?plugin=0   no bridge, as in cmaj play
+//   ?page=fx    open on a page
+
+const manifest = await (await fetch ("../../plugin.cmajorpatch")).json();
+const design = { width: manifest.view.width, height: manifest.view.height };
+const withPlugin = new URLSearchParams (location.search).get ("plugin") !== "0";
+
+class MockPatchConnection
+{
+    constructor()
+    {
+        this.params = new Map();
+        this.paramListeners = [];
+        this.state = new Map();
+        this.stateListeners = [];
+        this.endpointListeners = new Map();
+        this.log = [];
+    }
+    addAllParameterListener (fn)    { this.paramListeners.push (fn); }
+    removeAllParameterListener (fn) { this.paramListeners = this.paramListeners.filter (f => f !== fn); }
+    requestParameterValue (id)      { if (this.params.has (id)) this.paramListeners.forEach (f => f ({ endpointID: id, value: this.params.get (id) })); }
+    sendEventOrValue (id, value)
+    {
+        this.log.push ([id, value]);
+        if (typeof value === "number" && this.params.get (id) !== value)
+        {
+            this.params.set (id, value);
+            this.paramListeners.forEach (f => f ({ endpointID: id, value }));
+        }
+    }
+    sendParameterGestureStart() {}
+    sendParameterGestureEnd() {}
+    addStoredStateValueListener (fn)    { this.stateListeners.push (fn); }
+    removeStoredStateValueListener (fn) { this.stateListeners = this.stateListeners.filter (f => f !== fn); }
+    reply (key, value)              { this.stateListeners.forEach (f => f ({ key, value })); }
+    requestStoredStateValue (key)
+    {
+        setTimeout (() =>
+        {
+            if (! key.startsWith ("bridge:"))
+                return this.reply (key, this.state.get (key));
+
+            if (! withPlugin)
+                return;
+
+            const [channel, request] = key.slice ("bridge:".length).split (/\?(.*)/s);
+
+            if (channel === "settings") this.answerSettings (request);
+            if (channel === "host") this.answerHost (request);
+            if (channel === "library") this.answerLibrary (request);
+        }, 0);
+    }
+    // The plugin's settings: the "window" is the #host element, sized by the zoom.
+    answerSettings (request)
+    {
+        const host = document.getElementById ("host");
+        let settings = {};
+        try { settings = JSON.parse (localStorage.getItem ("plugin-settings") ?? "{}"); } catch {}
+        if (request.startsWith ("zoom="))
+        {
+            const zoom = Math.min (3, Math.max (0.5, Number (request.slice (5)) || 1));
+            Object.assign (host.style, { inset: "auto", left: "0", top: "0", width: `${design.width * zoom}px`, height: `${design.height * zoom}px` });
+        }
+        if (request.startsWith ("save="))
+        {
+            settings = JSON.parse (request.slice (5));
+            localStorage.setItem ("plugin-settings", JSON.stringify (settings));
+        }
+        const zoom = Math.min (host.clientWidth / design.width, host.clientHeight / design.height);
+        this.reply ("bridge:settings", { settings, zoom });
+    }
+    // The host's parameter menu: the requests are kept in hostMenus.
+    answerHost (request)
+    {
+        this.hostMenus ??= [];
+
+        if (request.startsWith ("menu="))
+            this.hostMenus.push (JSON.parse (request.slice (5)));
+        else if (request === "dismiss")
+            this.hostMenus.push ("dismiss");
+        else
+            this.reply ("bridge:host", { menu: true });
+    }
+    // The bank library (tools/clap/Library.h), in memory for as long as the page: every folder
+    // "holds" the files in presets/ that the preview server lists.
+    async answerLibrary (request)
+    {
+        const lib = this.library ??= { banks: [], files: new Map(), parts: new Map() };
+        const reply = value => this.reply ("bridge:library", value);
+        const list = () => reply ({ banks: lib.banks, scanned: lib.scanned ?? [], extensions: lib.extensions ?? [] });
+        const toBase64 = bytes =>
+        {
+            let s = "";
+            for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode (...bytes.subarray (i, i + 32768));
+            return btoa (s);
+        };
+        const fromBase64 = s => Uint8Array.from (atob (s), c => c.charCodeAt (0));
+        const hash = s => [...s].reduce ((h, c) => Math.imul (h ^ c.charCodeAt (0), 16777619) >>> 0, 2166136261).toString (16);
+
+        if (request.startsWith ("scan="))
+        {
+            const { folders, extensions } = JSON.parse (request.slice (5));
+            const names = await (await fetch ("/presets/?list")).json().catch (() => []);
+            const found = [];
+            for (const folder of folders)
+                for (const name of names.filter (n => extensions.some (e => n.toLowerCase().endsWith (e))))
+                {
+                    const id = "f" + hash (folder + "/" + name);
+                    if (! lib.files.has (id))
+                        lib.files.set (id, new Uint8Array (await (await fetch ("../../presets/" + name)).arrayBuffer()));
+                    found.push ({ id, name: name.replace (/\.[^.]*$/, ""), file: name, origin: "folder", path: folder + "/" + name, folder,
+                                  size: lib.files.get (id).length, modified: 1 });
+                }
+            lib.banks = [...found, ...lib.banks.filter (b => b.origin === "opened")];
+            lib.scanned = folders;
+            lib.extensions = extensions;
+            return list();
+        }
+        if (request.startsWith ("read="))
+        {
+            const { id, part } = JSON.parse (request.slice (5));
+            const bytes = lib.files.get (id), size = 512 * 1024;
+            if (! bytes) return reply ({ read: { id, error: "not in the library" } });
+            const parts = Math.max (1, Math.ceil (bytes.length / size));
+            return reply ({ read: { id, part, parts, data: toBase64 (bytes.subarray (part * size, (part + 1) * size)) } });
+        }
+        if (request.startsWith ("put="))
+        {
+            const { id, name, ext, part, parts, data } = JSON.parse (request.slice (4));
+            const got = [...(part === 0 ? [] : lib.parts.get (id) ?? []), fromBase64 (data)];
+            lib.parts.set (id, got);
+            if (part + 1 < parts) return;
+            const bytes = new Uint8Array (got.reduce ((n, p) => n + p.length, 0));
+            got.reduce ((at, p) => (bytes.set (p, at), at + p.length), 0);
+            lib.parts.delete (id);
+            lib.files.set (id, bytes);
+            lib.banks = [...lib.banks.filter (b => b.id !== id), { id, name, file: name + (ext ?? ""), origin: "opened", path: "", folder: "", size: bytes.length, modified: 1 }];
+            return list();
+        }
+        if (request.startsWith ("remove="))
+        {
+            const id = request.slice (7);
+            lib.banks = lib.banks.filter (b => ! (b.id === id && b.origin === "opened"));
+            return list();
+        }
+        list();
+    }
+    sendStoredStateValue (key, v)   { this.state.set (key, v); this.reply (key, v); }
+    requestFullStoredState (callback)
+    {
+        setTimeout (() => callback ({ parameters: [...this.params].map (([name, value]) => ({ name, value })),
+                                      values: Object.fromEntries (this.state) }), 0);
+    }
+    addEndpointListener (id, fn)    { if (! this.endpointListeners.has (id)) this.endpointListeners.set (id, []); this.endpointListeners.get (id).push (fn); }
+    removeEndpointListener (id, fn) { this.endpointListeners.set (id, (this.endpointListeners.get (id) ?? []).filter (f => f !== fn)); }
+    // what the patch would send the view from an output endpoint: pc.emit ("meterOut", [0.5, 0.4])
+    emit (id, value)                { (this.endpointListeners.get (id) ?? []).forEach (f => f (value)); }
+    getResourceAddress (p)          { return "../../" + p.replace (/^\//, ""); }
+    readResource (p)                { return fetch (this.getResourceAddress (p)); }
+}
+
+const pc = new MockPatchConnection();
+window.pc = pc;
+const worker = await import ("../../bundle/worker.js");
+worker.default (pc);
+const mod = await import ("../../bundle/view.js");
+const view = mod.default (pc);
+document.getElementById ("host").appendChild (view);
+window.view = view;
+const page = new URLSearchParams (location.search).get ("page");
+if (page) setTimeout (() => view.showPage (page), 0);
+</script>
+</body>
+</html>

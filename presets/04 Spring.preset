@@ -1,0 +1,8 @@
+{
+  "name": "Spring",
+  "author": "",
+  "category": "delay",
+  "tags": ["chirp", "red", "spring"],
+  "description": "Anomalous dispersion: the lows lag by up to 60 ms, the drip of a spring tank.",
+  "values": { "distance": 60, "chroma": -0.9, "aperture": 0.55, "intensity": 0.3, "mix": 1, "blend": 0 }
+}

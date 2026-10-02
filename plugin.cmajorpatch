@@ -1,0 +1,28 @@
+{
+    "CmajorVersion":    1,
+    "ID":               "dev.goolord.fresnel",
+    "version":          "0.1",
+    "name":             "Fresnel",
+    "description":      "Chromatic dispersion and phase shaping after Fresnel diffraction",
+    "category":         "effect",
+    "manufacturer":     "goolord",
+    "isInstrument":     false,
+
+    "plugin":
+    {
+        "manufacturerCode":  "Gool",
+        "pluginCode":        "Fres"
+    },
+
+    "source":           [ "dsp/FresnelDisperser.cmajor", "dsp/Params.cmajor", "dsp/Plugin.cmajor", "dsp/lib/Common.cmajor" ],
+    "worker":           "bundle/worker.js",
+    "resources":        [ "bundle/factory-presets.json" ],
+
+    "view":
+    {
+        "src":       "bundle/view.js",
+        "width":     1000,
+        "height":    560,
+        "resizable": true
+    }
+}

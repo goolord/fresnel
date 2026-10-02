@@ -1,0 +1,8 @@
+{
+  "name": "Phaser Glass",
+  "author": "",
+  "category": "filter",
+  "tags": ["crossfade", "comb"],
+  "description": "Crossfaded half and half with the dry sound: the dispersed band combs like a phaser, the rest stays aligned.",
+  "values": { "distance": 8, "chroma": 0.5, "aperture": 0.6, "intensity": 0.4, "mix": 0.5, "blend": 1 }
+}

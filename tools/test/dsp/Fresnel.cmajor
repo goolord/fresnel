@@ -1,0 +1,49 @@
+// uses: dsp/Params.cmajor dsp/FresnelDisperser.cmajor
+// The Fresnel disperser with every control moving faster than anyone would move it: the distance
+// sweeping 0 .. 250 ms, the chroma red to violet and back, the slit opening and closing, the
+// intensity at its extremes (the envelope throwing the slit around on every burst), the mix and
+// the blend switching. The lattice's glides have to keep all of that passive.
+
+processor Modulator
+{
+    output event params::Values out;
+
+    void main()
+    {
+        var v = params::defaults();
+        int frame = 0;
+
+        loop
+        {
+            let t = float (frame) / float (processor.frequency);
+            v.distance = 125.0f + 125.0f * sin (t * 2.3f);
+            v.chroma = sin (t * 1.7f);
+            v.aperture = 0.525f + 0.475f * sin (t * 3.1f);
+            v.intensity = sin (t * 0.9f) > 0 ? 1.0f : -1.0f;
+            v.mix = 0.5f + 0.5f * sin (t * 4.0f);
+            v.blend = t > 1.5f ? params::blend::crossfade : params::blend::morph;
+            out <- v;
+
+            loop (64)
+            {
+                ++frame;
+                advance();
+            }
+        }
+    }
+}
+
+graph Test [[ main ]]
+{
+    output stream float<2> out;
+    node source = test::Source;
+    node modulator = Modulator;
+    node fx = fresnel::FresnelDisperser;
+
+    connection
+    {
+        modulator.out -> fx.paramsIn;
+        source -> fx.in;
+        fx.out -> out;
+    }
+}

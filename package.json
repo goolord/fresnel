@@ -1,0 +1,17 @@
+{
+  "name": "fresnel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "res": "rescript",
+    "bundle": "node tools/bundle.mjs",
+    "build": "rescript && node tools/bundle.mjs",
+    "watch": "rescript watch",
+    "clean": "rescript clean",
+    "preview": "node tools/ui-preview/serve.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "rescript": "^12.3.1"
+  }
+}

@@ -1,0 +1,472 @@
+//  The Fresnel disperser: chromatic dispersion of audio, after the optics of near-field (Fresnel)
+//  diffraction. docs/dispersion.md derives it; in short:
+//
+//  Fresnel propagation over a distance z multiplies a field's spectrum by a quadratic phase,
+//  H(w) = exp (-i gamma w^2), whose group delay tau(w) = 2 gamma w grows linearly with frequency:
+//  a chirp. Here the phase law is written on a warped (mel-like) frequency axis u, 0..1, as
+//
+//      theta(u) = gamma u^2 + delta u^3        tau(u) = T * max (0, 1 - ((u - c) / h)^2)
+//
+//  a parabola of group delay peaking at u = c (the chroma: the colour slowed the most) with
+//  half-width h (the aperture), T the spread (the distance). gamma = T c / h^2 and
+//  delta = -T / (3 h^2): the quadratic Fresnel term and the cubic (third-order) term that tilts it.
+//
+//  That group delay is built, at zero latency, from a cascade of `sections` second-order allpass
+//  sections, placed by inverting the cumulative phase (Abel & Smith, "Robust design of very
+//  high-order allpass dispersion filters", DAFx 2006): every section owns a band holding 2 pi of the
+//  target's phase, its pole sits at the band's phase midpoint, and its radius follows the band's
+//  width. The sections the dispersion doesn't need are parked above `topHz`, where their phase is
+//  out of earshot, so the audible band keeps (nearly) zero group delay wherever the target is zero,
+//  and the dispersed signal needs no compensating delay to sit with the dry one.
+//
+//  Each section is a normalized (rotation) lattice in float64: coefficient pairs (k, sqrt (1 - k^2))
+//  glide in a straight line between designs, which keeps every in-between filter passive, so the
+//  coefficients may move every sample without bursts or instability.
+
+namespace fresnel
+{
+    /// Second-order allpass sections per channel: the dispersion budget. Each contributes 2 pi of
+    /// phase, so the spread a setting can reach is about 4 * sections / (the share of the
+    /// spectrum it disperses) samples.
+    let sections = 384;
+
+    /// Points of the design grid along the warped frequency axis.
+    let gridSize = 512;
+
+    /// The coefficients are redesigned every designInterval frames, and glide there per sample.
+    let designInterval = 64;
+
+    /// The telemetry curve: group delay at curvePoints frequencies, 20 Hz .. 20 kHz on a log
+    /// scale, worked out curvePerDesign points at a time.
+    let curvePoints = 256;
+    let curvePerDesign = 8;
+    let curveLowHz = 20.0;
+    let curveHighHz = 20000.0;
+
+    /// The frequency axis is linear below warpKneeHz and logarithmic above (like the mel scale).
+    let warpKneeHz = 200.0;
+
+    /// Dispersion stops at topHz (or 0.4 of the sample rate, if that's lower); the unused sections
+    /// are parked above it.
+    let topHz = 16000.0;
+
+    /// A pole's width over its band's: wider smooths the sum of the sections, narrower keeps more
+    /// detail (1.4 measures best, see docs/dispersion.md). Parked sections are made narrow so that
+    /// their skirts don't reach down into the audible band.
+    let beta = 1.4;
+    let betaParked = 0.05;
+    let maxRadius = 0.99995;
+
+    /// Samples of group delay added everywhere, so that the cumulative phase always rises and can
+    /// be inverted.
+    let floorDelay = 0.02;
+
+    /// What the view shows besides the curve.
+    struct Telemetry
+    {
+        /// the input level the envelope follower has, 0 (-54 dB or less) .. 1 (0 dB)
+        float envelope;
+        /// the slit's width after the envelope, 0..1
+        float aperture;
+        /// the peak group delay the sections realise, ms (after the budget limit)
+        float spread;
+        /// the frequency slowed the most
+        float peakHz;
+        /// the share of the sections dispersing (the rest are parked)
+        float budget;
+        /// where the dispersion stops
+        float topHz;
+    }
+
+    //==============================================================================
+    // The frequency axis
+
+    /// The warped position (0..1) of hz on an axis that ends at top.
+    float64 warp (float64 hz, float64 top)
+    {
+        return log (1.0 + max (hz, 0.0) / warpKneeHz) / log (1.0 + top / warpKneeHz);
+    }
+
+    /// The frequency at warped position u.
+    float64 unwarp (float64 u, float64 top)
+    {
+        return warpKneeHz * (pow (1.0 + top / warpKneeHz, u) - 1.0);
+    }
+
+    /// The chroma control (-1 red .. 1 violet) as the warped position of the peak, from 20 Hz
+    /// to the top.
+    float64 chromaPosition (float64 chroma, float64 top)
+    {
+        let lowest = warp (20.0, top);
+        return lowest + (1.0 - lowest) * 0.5 * (clamp (chroma, -1.0, 1.0) + 1.0);
+    }
+
+    /// The target's shape, 0..1: a parabola of group delay peaking at c, half-width h.
+    float64 shape (float64 u, float64 c, float64 h)
+    {
+        let x = (u - c) / h;
+        return max (0.0, 1.0 - x * x);
+    }
+
+    /// The level (linear peak) as the envelope reads it: -54 dB .. 0 dB as 0..1.
+    float64 envelopeAmount (float64 level)
+    {
+        return clamp (1.0 + 20.0 * log10 (max (level, 1.0e-6)) / 54.0, 0.0, 1.0);
+    }
+
+    //==============================================================================
+    processor FresnelDisperser
+    {
+        input event params::Values paramsIn;
+        input stream float<2> in;
+
+        output stream float<2> out;
+        /// peak levels, about 30 times a second
+        output event float<2> meterOut;
+        /// group delay (ms) at curvePoints frequencies, 20 Hz .. 20 kHz on a log scale
+        output event float[curvePoints] phaseResponseCurve;
+        output event Telemetry telemetry;
+
+        params::Values p;
+
+        void init()                         { p = params::defaults(); }
+        event paramsIn (params::Values v)   { p = v; }
+
+        //==============================================================================
+        // the lattice: per section, its coefficients (k1, c1, k2, c2), their glide per sample, and
+        // its two states, g0 and g1 a sample ago
+        float64<4>[sections] coef, glide;
+        float64<2>[sections] s0, s1;
+
+        // the design: the grid's frequencies (radians per sample) and cumulative phase
+        float64[gridSize + 1] omega, phase;
+        float64 sampleRate, top, omegaTop, phaseTop, parkedDensity;
+
+        // each section's pole, for the telemetry
+        float64[sections] radius, poleCos, poleSin;
+
+        // smoothed controls (spread in samples, chroma position, slit half-width) and the envelope
+        float64 spread, centre, width, envelope;
+        float64 spreadUsed, budgetUsed, apertureNow;
+        float mixNow, gainNow;
+        bool fresh = true;
+
+        // telemetry
+        float[curvePoints] curve;
+        float64[curvePoints] curveCos, curveSin;
+        int curveNext;
+        float<2> peak;
+        int meterFrames;
+
+        // silence: the lattice rests (states cleared) once the input has been silent this long
+        int silentFrames;
+        bool idle = true;
+
+        //==============================================================================
+        void prepare()
+        {
+            sampleRate = processor.frequency;
+            top = min (topHz, 0.4 * sampleRate);
+            omegaTop = twoPi * top / sampleRate;
+
+            for (wrap<gridSize + 1> i)
+                omega[i] = twoPi * unwarp (float64 (i) / float64 (gridSize), top) / sampleRate;
+
+            for (wrap<curvePoints> i)
+            {
+                let hz = curveLowHz * pow (curveHighHz / curveLowHz, float64 (i) / float64 (curvePoints - 1));
+                let w = twoPi * min (hz, 0.499 * sampleRate) / sampleRate;
+                curveCos[i] = cos (w);
+                curveSin[i] = sin (w);
+            }
+        }
+
+        /// The frequency (radians per sample) where the cumulative phase reaches `target`, walking
+        /// the grid on from cell j (targets come in rising order); density is the target's group
+        /// delay there.
+        float64 invert (float64 target, int& j, float64& density)
+        {
+            if (target >= phaseTop)
+            {
+                density = parkedDensity;
+                return min (pi, omegaTop + (target - phaseTop) / parkedDensity);
+            }
+
+            while (j < gridSize - 1 && phase.at (j + 1) < target)
+                ++j;
+
+            let p0 = phase.at (j);
+            let p1 = phase.at (j + 1);
+            let w0 = omega.at (j);
+            let w1 = omega.at (j + 1);
+            density = (p1 - p0) / max (w1 - w0, 1.0e-12);
+            return w0 + (w1 - w0) * clamp ((target - p0) / max (p1 - p0, 1.0e-30), 0.0, 1.0);
+        }
+
+        /// Places every section's pole for the current controls, and sets its coefficients to
+        /// glide there over the next designInterval frames (or jump, the first time).
+        void design (bool jump)
+        {
+            let h = max (0.001, width * max (centre, 1.0 - centre));
+
+            // the target's cumulative phase along the grid
+            var tauBefore = spread * shape (0.0, centre, h) + floorDelay;
+            phase[0] = 0.0;
+
+            for (int i = 1; i <= gridSize; ++i)
+            {
+                let tau = spread * shape (float64 (i) / float64 (gridSize), centre, h) + floorDelay;
+                phase.at (i) = phase.at (i - 1) + 0.5 * (tau + tauBefore) * (omega.at (i) - omega.at (i - 1));
+                tauBefore = tau;
+            }
+
+            // The budget: what the audible band asks for, less what the parked sections need, is
+            // softly limited to what the sections hold (so the spread saturates rather than clips).
+            let available = twoPi * float64 (sections);
+            let parkedMinimum = max (twoPi * 4.0, 2.0 * (pi - omegaTop));
+            let room = available - parkedMinimum;
+            let wanted = phase[gridSize];
+            let limited = wanted * pow (1.0 + pow (wanted / room, 4.0), -0.25);
+            let scale = limited / wanted;
+
+            for (wrap<gridSize + 1> i)
+                phase[i] *= scale;
+
+            phaseTop = limited;
+            parkedDensity = (available - limited) / (pi - omegaTop);
+            spreadUsed = spread * scale;
+            budgetUsed = limited / available;
+
+            // each section: 2 pi of the cumulative phase, its pole at the middle of it
+            int j = 0;
+            var edge = 0.0;
+
+            for (wrap<sections> k)
+            {
+                var density = 0.0, edgeDensity = 0.0;
+                let theta = invert (pi * float64 (2 * k + 1), j, density);
+                let nextEdge = invert (pi * float64 (2 * k + 2), j, edgeDensity);
+
+                // the band's width, or the width the local group delay gives 2 pi (where a band
+                // reaches into flat ground, as the first does)
+                let band = min (nextEdge - edge, twoPi / max (density, 1.0e-9));
+                edge = nextEdge;
+
+                let parked = clamp ((theta - omegaTop) / 0.15, 0.0, 1.0);
+                let b = beta + (betaParked - beta) * parked;
+                let rho = min (maxRadius, exp (-0.5 * b * band));
+
+                // the lattice's reflection coefficients and their complements, worked out from
+                // the half angle so that they stay accurate for poles near the unit circle
+                let sh = sin (0.5 * theta);
+                let ch = cos (0.5 * theta);
+                let r2 = rho * rho;
+                let rimGap = (1.0 - rho) * (1.0 - rho);   // (not "near": a macro in the Windows headers the CLAP build sees)
+                let k1 = -2.0 * rho * (ch * ch - sh * sh) / (1.0 + r2);
+                let c1 = sqrt ((rimGap + 4.0 * rho * sh * sh) * (rimGap + 4.0 * rho * ch * ch)) / (1.0 + r2);
+                let k2 = r2;
+                let c2 = sqrt ((1.0 - r2) * (1.0 + r2));
+                let target = float64<4> (k1, c1, k2, c2);
+
+                radius[k] = rho;
+                poleCos[k] = ch * ch - sh * sh;
+                poleSin[k] = 2.0 * sh * ch;
+
+                if (jump)
+                {
+                    coef[k] = target;
+                    glide[k] = float64<4> (0.0, 0.0, 0.0, 0.0);
+                }
+                else
+                {
+                    glide[k] = (target - coef[k]) * (1.0 / float64 (designInterval));
+                }
+            }
+        }
+
+        /// The group delay (samples) of the placed sections at the curve's point i.
+        float64 groupDelayAt (wrap<curvePoints> i)
+        {
+            let cw = curveCos[i];
+            let sw = curveSin[i];
+            var sum = 0.0;
+
+            for (wrap<sections> k)
+            {
+                let rho = radius[k];
+                let r2 = rho * rho;
+                let num = 1.0 - r2;
+                let a = cw * poleCos[k];
+                let b = sw * poleSin[k];
+                sum += num / (1.0 + r2 - 2.0 * rho * (a + b)) + num / (1.0 + r2 - 2.0 * rho * (a - b));
+            }
+
+            return sum;
+        }
+
+        /// A few more points of the curve; the whole curve and the telemetry go out once it's done.
+        void sendCurve()
+        {
+            for (wrap<curvePerDesign> n)
+            {
+                let i = wrap<curvePoints> (curveNext);
+                curve[i] = float (groupDelayAt (i) * 1000.0 / sampleRate);
+                curveNext = (curveNext + 1) % curvePoints;
+            }
+
+            if (curveNext == 0)
+            {
+                phaseResponseCurve <- curve;
+
+                Telemetry t;
+                t.envelope = float (envelopeAmount (envelope));
+                t.aperture = float (apertureNow);
+                t.spread = float (spreadUsed * 1000.0 / sampleRate);
+                t.peakHz = float (unwarp (centre, top));
+                t.budget = float (budgetUsed);
+                t.topHz = float (top);
+                telemetry <- t;
+            }
+        }
+
+        /// The controls' smoothing and a new design: every designInterval frames.
+        void update()
+        {
+            let morph = p.blend == params::blend::morph;
+            let wantSpread = float64 (max (p.distance, 0.0f)) * 0.001 * sampleRate * (morph ? float64 (clamp (p.mix, 0.0f, 1.0f)) : 1.0);
+            let wantCentre = chromaPosition (float64 (p.chroma), top);
+
+            // the slit: the input level narrows it (intensity > 0) or widens it (< 0), up to 8x
+            let slit = float64 (clamp (p.aperture, 0.05f, 1.0f));
+            let wantWidth = clamp (slit * pow (8.0, -float64 (clamp (p.intensity, -1.0f, 1.0f)) * envelopeAmount (envelope)), 0.03, 1.0);
+
+            if (fresh)
+            {
+                spread = wantSpread;
+                centre = wantCentre;
+                width = wantWidth;
+            }
+
+            let k = float64 (lib::smoothing (sampleRate, 40.0, designInterval));
+            spread += (wantSpread - spread) * k;
+            centre += (wantCentre - centre) * k;
+            width += (wantWidth - width) * k;
+            apertureNow = width;
+
+            // resting: the coefficients may as well jump, nothing is passing through them
+            design (fresh || idle);
+            fresh = false;
+            sendCurve();
+        }
+
+        void clearLattice()
+        {
+            for (wrap<sections> k)
+            {
+                s0[k] = float64<2> (0.0, 0.0);
+                s1[k] = float64<2> (0.0, 0.0);
+            }
+        }
+
+        // peak levels about 30 times a second
+        void meter (float<2> y)
+        {
+            peak = max (peak, abs (y));
+
+            if (++meterFrames >= int (sampleRate / 30.0))
+            {
+                meterOut <- peak;
+                peak = float<2> (0.0f, 0.0f);
+                meterFrames = 0;
+            }
+        }
+
+        //==============================================================================
+        void main()
+        {
+            prepare();
+            clearLattice();
+
+            let envAttack = lib::smoothing (sampleRate, 3.0, 1);
+            let envRelease = lib::smoothing (sampleRate, 150.0, 1);
+            let gainGlide = lib::smoothing (sampleRate, 20.0, 1);
+            let restAfter = int (1.5 * sampleRate);
+
+            mixNow = clamp (p.mix, 0.0f, 1.0f);
+            gainNow = lib::dbToGain (p.level);
+
+            loop
+            {
+                update();
+
+                let crossfade = p.blend == params::blend::crossfade;
+                let wantMix = crossfade ? clamp (p.mix, 0.0f, 1.0f) : 1.0f;
+                let wantGain = lib::dbToGain (clamp (p.level, -24.0f, 12.0f));
+
+                for (wrap<designInterval> n)
+                {
+                    let dry = in;
+                    let level = max (abs (dry[0]), abs (dry[1]));
+
+                    // the envelope follower, linked across the channels
+                    let e = float64 (level);
+                    envelope += (e - envelope) * float64 (e > envelope ? envAttack : envRelease);
+
+                    if (level > 1.0e-9f)
+                    {
+                        silentFrames = 0;
+                        idle = false;
+                    }
+                    else if (! idle && ++silentFrames > restAfter)
+                    {
+                        idle = true;
+                        clearLattice();
+                    }
+
+                    var wet = float<2> (0.0f, 0.0f);
+
+                    if (! idle)
+                    {
+                        var x = float64<2> (float64 (dry[0]), float64 (dry[1]));
+
+                        for (wrap<sections> k)
+                        {
+                            let c = coef[k];
+                            let f1 = c[3] * x - c[2] * s1[k];
+                            let y = c[2] * x + c[3] * s1[k];
+                            let f0 = c[1] * f1 - c[0] * s0[k];
+                            s1[k] = c[0] * f1 + c[1] * s0[k];
+                            s0[k] = f0;
+                            coef[k] = c + glide[k];
+                            x = y;
+                        }
+
+                        wet = float<2> (float (x[0]), float (x[1]));
+                    }
+                    else
+                    {
+                        for (wrap<sections> k)
+                            coef[k] += glide[k];
+                    }
+
+                    mixNow += (wantMix - mixNow) * gainGlide;
+                    gainNow += (wantGain - gainNow) * gainGlide;
+
+                    let y = (dry + (wet - dry) * mixNow) * gainNow;
+                    out <- y;
+                    meter (y);
+                    advance();
+                }
+
+                // a guard: should the lattice ever blow up (it shouldn't), start it afresh
+                var energy = 0.0;
+
+                for (wrap<sections> k)
+                    energy += abs (s0[k][0]) + abs (s0[k][1]);
+
+                if (! (energy < 1.0e6))
+                    clearLattice();
+            }
+        }
+    }
+}

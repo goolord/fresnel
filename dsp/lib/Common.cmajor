@@ -1,0 +1,17 @@
+//  The small helpers the plugin shares: smoothing coefficients and decibels.
+//
+//  Everything here is in namespace lib, and nothing reads a parameter endpoint: how parameters
+//  reach the DSP is the plugin's business (dsp/FresnelDisperser.cmajor reads the generated
+//  params::Values).
+
+namespace lib
+{
+    /// One-pole smoothing coefficient for a time constant of ms milliseconds, applied every
+    /// `every` samples: y += k (target - y).
+    float smoothing (float64 sr, float64 ms, int every)
+    {
+        return float (1.0 - exp (-1000.0 * float64 (every) / (ms * sr)));
+    }
+
+    float dbToGain (float db)       { return float (pow (10.0, float64 (db) * 0.05)); }
+}
