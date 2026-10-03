@@ -44,6 +44,11 @@
 //  - Cmajor's Engine keeps the program details it last parsed (cmaj_Engine.h), which a build
 //    asks for several times.
 //
+// and to be smaller:
+//
+//  - The generated class's program details (entry.cpp) are embedded without the whitespace the
+//    generator indents them with, which is most of their size.
+//
 //   node tools/clap-patch.mjs [path to the generated project]
 
 import { readFileSync, writeFileSync, copyFileSync, readdirSync } from "node:fs";
@@ -170,6 +175,89 @@ if (open(join(project, "include", "choc", "choc", "javascript", "choc_javascript
   insertBefore(`        return returnVal.toChocValue();\n`, `        runPendingJobs();\n`);
 
   save();
+}
+
+//==============================================================================
+// The generated patch class: its program details without the whitespace the generator indents
+// them with, which is most of their size. Small ones are a string literal, large ones a char
+// array of the JSON's UTF-8 bytes.
+
+// JSON without the whitespace between its tokens
+const compactJSON = (json) => {
+  let compact = "";
+  for (let i = 0, inString = false; i < json.length; i++) {
+    const c = json[i];
+    if (inString) {
+      compact += c;
+      if (c === "\\") compact += json[++i];
+      else if (c === '"') inString = false;
+    } else if (!/\s/.test(c)) {
+      compact += c;
+      inString = c === '"';
+    }
+  }
+  JSON.parse(compact);
+  return compact;
+};
+
+// The bytes of a run of adjacent C string literals
+const cStringBytes = (literals) => {
+  const simple = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 34, "'": 39, "\\": 92, "?": 63 };
+  const bytes = [];
+  for (const [, body] of literals.matchAll(/"((?:[^"\\]|\\.)*)"/gs)) {
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] !== "\\") {
+        bytes.push(...Buffer.from(body[i], "utf8"));
+        continue;
+      }
+      const e = body[++i];
+      if (e in simple) bytes.push(simple[e]);
+      else if (e === "x") {
+        const hex = /^[0-9a-fA-F]+/.exec(body.slice(i + 1))[0];
+        bytes.push(parseInt(hex, 16) & 255);
+        i += hex.length;
+      } else if (/[0-7]/.test(e)) {
+        const oct = /^[0-7]{1,3}/.exec(body.slice(i))[0];
+        bytes.push(parseInt(oct, 8) & 255);
+        i += oct.length - 1;
+      } else fail(`the escape \\${e} in programDetailsJSON`);
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+};
+
+// A C string literal of a string's UTF-8 bytes, in lines
+const cStringLiteral = (text, indent) => {
+  const escaped = [...Buffer.from(text, "utf8")].map((b) =>
+    b === 34 ? '\\"' : b === 92 ? "\\\\" : b >= 32 && b < 127 ? String.fromCharCode(b) : "\\" + b.toString(8).padStart(3, "0"),
+  );
+  const lines = [];
+  for (let i = 0; i < escaped.length; i += 120) lines.push(indent + '"' + escaped.slice(i, i + 120).join("") + '"');
+  return lines.join("\n");
+};
+
+if (open(join(project, "entry.cpp"))) {
+  const literal = /^( *)static constexpr const char\* programDetailsJSON =\n((?:\s*"(?:[^"\\]|\\.)*")+);/m.exec(source);
+  const array = /^( *)static constexpr const char programDetailsJSON\[\] = \{([^}]*)\};/m.exec(source);
+  const before = source.length;
+
+  if (literal) {
+    const [found, indent, literals] = literal;
+    const json = compactJSON(cStringBytes(literals));
+    source = source.replace(found, () => `${indent}${marker} the program details without whitespace\n${indent}static constexpr const char* programDetailsJSON =\n${cStringLiteral(json, indent + "        ")};`);
+  } else if (array) {
+    const [found, indent, values] = array;
+    const bytes = values.match(/-?\d+/g).map((b) => (Number(b) + 256) % 256);
+    if (bytes.pop() !== 0) fail("programDetailsJSON's terminating 0");
+    const json = compactJSON(Buffer.from(bytes).toString("utf8"));
+    const chars = [...Buffer.from(json, "utf8")].map((b) => (b > 127 ? b - 256 : b));
+    const lines = [];
+    for (let i = 0; i < chars.length; i += 64) lines.push(`${indent}    ${chars.slice(i, i + 64).join(",")},`);
+    source = source.replace(found, () => `${indent}${marker} the program details without whitespace\n${indent}static constexpr const char programDetailsJSON[] = {\n${lines.join("\n")} 0 };`);
+  } else fail("programDetailsJSON");
+
+  save();
+  console.log(`  programDetailsJSON: ${before - source.length} fewer characters of source`);
 }
 
 //==============================================================================

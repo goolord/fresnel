@@ -4,16 +4,21 @@
 // (ui/plugin/Formats.res), in file-name order, into bundle/factory-presets.json, a JSON bank the
 // view and the worker read (PresetStore.readFactory).
 //
+// bundle/ is emptied first: Cmajor's generator embeds every file in the view's folder in the
+// plugin, not only the ones the manifest names, so a file left over there makes it bigger. The
+// bundles are minified, which the plugin also embeds.
+//
 // run: npm run build   (compiles the ReScript sources, then bundles)
 
 import { build } from "esbuild";
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "bundle");
-mkdirSync(out, { recursive: true });
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out);
 
 await build({
   entryPoints: { view: join(root, "ui", "Index.res.mjs"), worker: join(root, "worker", "PatchWorker.res.mjs") },
@@ -22,6 +27,7 @@ await build({
   format: "esm",
   platform: "browser",
   target: "es2020",
+  minify: true,
   legalComments: "none",
   logLevel: "warning",
 });
